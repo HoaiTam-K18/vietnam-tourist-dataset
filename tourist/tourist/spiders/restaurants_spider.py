@@ -1,113 +1,187 @@
 import scrapy
-from scrapy.http import HtmlResponse
+import json
+import re
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
-import json, re
+import time
 
 
-class RestaurantSpider(scrapy.Spider):
+class RestaurantsSpider(scrapy.Spider):
     name = "restaurants"
-    start_urls = [
-        "https://www.trip.com/restaurant/city-434.html"
-    ]
+    start_url = "https://us.trip.com/restapi/soa2/18361/foodListSearch"
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0"
+    }
 
-    def __init__(self):
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")  # bỏ nếu muốn thấy trình duyệt chạy
-        service = Service("/opt/homebrew/bin/chromedriver")  # đường dẫn ChromeDriver
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
-        self.seen = set()  # dùng để lọc trùng theo url
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-    def parse(self, response):
-        self.driver.get(response.url)
-        wait = WebDriverWait(self.driver, 10)
+        # setup selenium
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless") 
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
 
-        while True:
-            html = self.driver.page_source
-            resp = HtmlResponse(url=self.driver.current_url, body=html, encoding="utf-8")
+        self.driver = webdriver.Chrome(service=Service("/opt/homebrew/bin/chromedriver"), options=options)
 
-            data = resp.css("#__NEXT_DATA__::text").get()
-            json_data = json.loads(data)
+    def closed(self, reason):
+        """Đóng driver khi spider kết thúc"""
+        if self.driver:
+            self.driver.quit()
 
-            restaurants = json_data["props"]["pageProps"]["initialState"]["resultList"]
+    def start_requests(self):
+        payload = self.build_payload(page_index=0)
+        yield scrapy.Request(
+            url=self.start_url,
+            method="POST",
+            headers=self.headers,
+            body=json.dumps(payload),
+            callback=self.parse,
+            meta={"page_index": 0}
+        )
 
-            for r in restaurants:
-                url = "https://us.trip.com" + r.get("jumpUrl", "")
-                if not url or url in self.seen:  # bỏ qua trùng
-                    continue
-                self.seen.add(url)
-
-                img = r.get("imgeUrls")
-                name = r.get("englishName", "")
-                rating = r.get("rating", None)
-                review_count = r.get("reviewCount", 0)
-                gglat = r.get("gglat", None)
-                gglon = r.get("gglon", None)
-                coordinate = str(gglat) + ", " + str(gglon)
-                price = r.get("price", 0)
-                short_desc = r["rankings"][0].get("recommendReason") if r.get("rankings") else None
-
-                long_desc = ""
-                if r.get("commentInfo") and isinstance(r["commentInfo"], list):
-                    long_desc = r["commentInfo"][0].get("content", "")
-                    long_desc = re.sub(r"\s+", " ", long_desc).strip()
-
-                # gửi sang parse_item để lấy thêm chi tiết (ví dụ address)
-                yield resp.follow(
-                    url,
-                    callback=self.parse_item,
-                    meta={
-                        "name": name,
-                        "img": img,
-                        "rating": rating,
-                        "review_count": review_count,
-                        "short_desc": short_desc,
-                        "long_desc": long_desc,
-                        "price": price,
-                        "coordinate": coordinate,
-                        "url": url,
-                    }
-                )
-
-            try:
-                next_btn = wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".btn-next"))
-                )
-                if "disabled" in next_btn.get_attribute("class"):
-                    break
-
-                old_data = data
-                self.driver.execute_script("arguments[0].click();", next_btn)
-
-                # chờ đến khi dữ liệu JSON thay đổi
-                WebDriverWait(self.driver, 10).until(
-                    lambda d: d.find_element(By.CSS_SELECTOR, "#__NEXT_DATA__").get_attribute("innerHTML") != old_data
-                )
-
-            except Exception as e:
-                self.logger.info(f"Stop because no Next: {e}")
-                break
-
-    def parse_item(self, response):
-        item = {
-            "name": response.meta.get("name"),
-            "img": response.meta.get("img"),
-            "rating": response.meta.get("rating"),
-            "review_count": response.meta.get("review_count"),
-            "short_desc": response.meta.get("short_desc"),
-            "long_desc": response.meta.get("long_desc"),
-            "price": response.meta.get("price"),
-            "coordinate": response.meta.get("coordinate"),
-            "url": response.meta.get("url"),
+    def build_payload(self, page_index: int):
+        return {
+            "districtId": 434,
+            "pageIndex": page_index,
+            "scence": 1,
+            "pageSize": 30,
+            "filterType": 2,
+            "lat": 0,
+            "lon": 0,
+            "popularArea": -1,
+            "head": {
+                "cid": "09034128116461760750",
+                "ctok": "",
+                "cver": "1.0",
+                "lang": "01",
+                "sid": "8888",
+                "syscode": "09",
+                "auth": "",
+                "xsid": "",
+                "extension": [
+                    {"name": "locale", "value": "en-US"},
+                    {"name": "currency", "value": "USD"},
+                    {"name": "platform", "value": "Online"},
+                    {"name": "channel_type", "value": "online"},
+                    {"name": "X-Request-Source", "value": ""}
+                ],
+                "Locale": "en-US",
+                "Language": "en",
+                "Currency": "USD",
+                "ClientID": "09034128116461760750"
+            }
         }
 
-        # địa chỉ nằm trong detail page
-        address_list = response.css(".gl-poi-detail_info div div::text").getall()
-        address = address_list[1] if len(address_list) > 1 else None
-        item["address"] = address
+    def clean_text(self, text: str) -> str:
+        if not text:
+            return ""
+        return re.sub(r"\s+", " ", text).strip()
 
-        yield item
+    def parse(self, response):
+        page_index = response.meta["page_index"]
+        data = response.json()
+
+        results = data.get("results", [])
+        if not results:
+            self.logger.info(f"🚫 Không còn dữ liệu, dừng crawl tại trang {page_index}")
+            return
+
+        for item in results:
+            name = item.get("englishName", "")
+            img = item.get("coverImgaeUrl", "")
+            rating = item.get("rating", "")
+            review_count = item.get("reviewCount", "")
+
+            short_desc = ""
+            if item.get("rankings"):
+                short_desc = item["rankings"][0].get("recommendReason", "")
+
+            long_desc = ""
+            if item.get("commentInfo"):
+                if isinstance(item["commentInfo"], list) and item["commentInfo"]:
+                    long_desc = item["commentInfo"][0].get("content", "")
+
+            short_desc = self.clean_text(short_desc)
+            long_desc = self.clean_text(long_desc)
+
+            coordinate = f'{item.get("gglat", "")}, {item.get("gglon", "")}'
+            url = "https://us.trip.com" + item.get("jumpUrl", "")
+
+            meta = {
+                "name": name,
+                "img": img,
+                "rating": rating,
+                "review_count": review_count,
+                "short_desc": short_desc,
+                "long_desc": long_desc,
+                "coordinate": coordinate,
+            }
+
+            yield response.follow(url, callback=self.parse_item, meta=meta)
+
+        # next page
+        next_page = page_index + 1
+        payload = self.build_payload(page_index=next_page)
+        yield scrapy.Request(
+            url=self.start_url,
+            method="POST",
+            headers=self.headers,
+            body=json.dumps(payload),
+            callback=self.parse,
+            meta={"page_index": next_page}
+        )
+
+    def parse_item(self, response):
+        name = response.meta.get("name")
+        img = response.meta.get("img")
+        rating = response.meta.get("rating")
+        review_count = response.meta.get("review_count")
+        short_desc = response.meta.get("short_desc")
+        long_desc = response.meta.get("long_desc")
+        coordinate = response.meta.get("coordinate")
+
+        # lấy address an toàn
+        address_parts = response.css("div.gl-poi-detail_info div div::text").getall()
+        address = self.clean_text(address_parts[1]) if len(address_parts) > 1 else ""
+
+        # lấy price
+        price = response.css(".gl-poi-detail_price::text").get()
+        price = self.clean_text(price)
+
+        # 👉 dùng selenium để lấy opening hours
+        self.driver.get(response.url)
+
+        try:
+            # chờ nút Opening Hours và click
+            btn = WebDriverWait(self.driver, 5).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, ".gl-poi-detail_time"))
+            )
+            btn.click()
+            time.sleep(1)
+        except Exception:
+            pass
+
+        # lấy opening hours sau khi click
+        html = self.driver.page_source
+        sel = scrapy.Selector(text=html)
+
+        opening_times = sel.css(".gl-format-weekday span::text").getall()
+        opening_times = "_".join(opening_times)
+
+        yield {
+            "name": self.clean_text(name),
+            "img": img,
+            "rating": rating,
+            "review_count": review_count,
+            "short_desc": short_desc,
+            "long_desc": long_desc,
+            "coordinate": coordinate,
+            "address": address,
+            "price": price,
+            "opening_times": opening_times
+        }

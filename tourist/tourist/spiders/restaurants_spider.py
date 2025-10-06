@@ -96,6 +96,7 @@ class RestaurantsSpider(scrapy.Spider):
             img = item.get("coverImgaeUrl", "")
             rating = item.get("rating", "")
             review_count = item.get("reviewCount", "")
+            price = item.get("price", 0)
 
             short_desc = ""
             if item.get("rankings"):
@@ -117,6 +118,7 @@ class RestaurantsSpider(scrapy.Spider):
                 "img": img,
                 "rating": rating,
                 "review_count": review_count,
+                "price": price,
                 "short_desc": short_desc,
                 "long_desc": long_desc,
                 "coordinate": coordinate,
@@ -144,14 +146,11 @@ class RestaurantsSpider(scrapy.Spider):
         short_desc = response.meta.get("short_desc")
         long_desc = response.meta.get("long_desc")
         coordinate = response.meta.get("coordinate")
+        price = response.meta.get("price")
 
         # lấy address an toàn
         address_parts = response.css("div.gl-poi-detail_info div div::text").getall()
         address = self.clean_text(address_parts[1]) if len(address_parts) > 1 else ""
-
-        # lấy price
-        price = response.css(".gl-poi-detail_price::text").get()
-        price = self.clean_text(price)
 
         # 👉 dùng selenium để lấy opening hours
         self.driver.get(response.url)
